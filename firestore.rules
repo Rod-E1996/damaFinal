@@ -1,0 +1,121 @@
+rules_version = '2';
+
+// Reglas de seguridad de TeleSalud.
+// Publicar en: Consola de Firebase > Firestore Database > Reglas.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function me() { return request.auth.uid; }
+    function myProfile() { return get(/databases/$(database)/documents/users/$(me())).data; }
+    function isDoctor() { return signedIn() && myProfile().role == 'medico'; }
+    function str(v, max) { return v is string && v.size() <= max; }
+
+    // ---------- Usuarios ----------
+    match /users/{userId} {
+      // Cada quien lee su perfil; cualquiera puede ver perfiles de médicos;
+      // los médicos pueden ver la ficha de los pacientes.
+      allow read: if signedIn() && (me() == userId || resource.data.role == 'medico' || isDoctor());
+      allow create: if signedIn() && me() == userId
+        && request.resource.data.role in ['paciente', 'medico']
+        && str(request.resource.data.name, 80)
+        && request.resource.data.email == request.auth.token.email;
+      // No se puede cambiar el rol ni el correo (evita escalar privilegios).
+      allow update: if signedIn() && me() == userId
+        && request.resource.data.role == resource.data.role
+        && request.resource.data.email == resource.data.email;
+      allow delete: if false;
+
+      match /measurements/{id} {
+        allow read: if signedIn() && (me() == userId || isDoctor());
+        allow create, update: if signedIn() && me() == userId
+          && request.resource.data.value is number
+          && str(request.resource.data.type, 20);
+        allow delete: if signedIn() && me() == userId;
+      }
+
+      match /records/{id} {
+        allow read: if signedIn() && (me() == userId || isDoctor());
+        allow create: if signedIn() && request.resource.data.createdBy == me()
+          && (me() == userId || isDoctor())
+          && str(request.resource.data.title, 120);
+        allow update: if signedIn() && me() == userId && resource.data.createdBy == me();
+        allow delete: if signedIn() && me() == userId && resource.data.type != 'consulta';
+      }
+    }
+
+    // ---------- Horarios ocupados ----------
+    match /slots/{slotId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.patientId == me()
+        && slotId == request.resource.data.doctorId + '_' + request.resource.data.date + '_' + request.resource.data.time.replace(':', '');
+      allow update: if false;
+      allow delete: if signedIn() && (resource.data.patientId == me() || resource.data.doctorId == me());
+    }
+
+    // ---------- Citas ----------
+    match /appointments/{id} {
+      allow read: if signedIn() && (resource.data.patientId == me() || resource.data.doctorId == me());
+      allow create: if signedIn()
+        && request.resource.data.patientId == me()
+        && request.resource.data.status == 'pendiente'
+        && get(/databases/$(database)/documents/users/$(request.resource.data.doctorId)).data.role == 'medico'
+        && existsAfter(/databases/$(database)/documents/slots/$(request.resource.data.slotId));
+      // El paciente solo puede cancelar; el médico confirma, cancela o completa.
+      allow update: if signedIn()
+        && (resource.data.patientId == me() || resource.data.doctorId == me())
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'prescriptionId'])
+        && request.resource.data.status in ['pendiente', 'confirmada', 'completada', 'cancelada']
+        && (resource.data.doctorId == me() || request.resource.data.status == 'cancelada');
+      allow delete: if false;
+    }
+
+    // ---------- Recetas ----------
+    match /prescriptions/{id} {
+      allow read: if signedIn() && (resource.data.patientId == me() || resource.data.doctorId == me());
+      allow create: if isDoctor() && request.resource.data.doctorId == me();
+      allow update, delete: if false;
+    }
+
+    // ---------- Chat ----------
+    match /chats/{chatId} {
+      allow read: if signedIn() && me() in resource.data.participants;
+      allow create: if signedIn()
+        && me() in request.resource.data.participants
+        && chatId == request.resource.data.patientId + '_' + request.resource.data.doctorId;
+      allow update: if signedIn()
+        && me() in resource.data.participants
+        && request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
+
+      match /messages/{msgId} {
+        allow read: if signedIn() && me() in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if signedIn()
+          && request.resource.data.senderId == me()
+          && str(request.resource.data.text, 5000)
+          && me() in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow update, delete: if false;
+      }
+    }
+
+    // ---------- Foro ----------
+    match /forumPosts/{postId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && request.resource.data.authorId == me()
+        && str(request.resource.data.title, 100)
+        && str(request.resource.data.body, 2000)
+        && request.resource.data.commentCount == 0;
+      // Cualquiera puede incrementar el contador de comentarios, nada más.
+      allow update: if signedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['commentCount']);
+      allow delete: if signedIn() && resource.data.authorId == me();
+
+      match /comments/{commentId} {
+        allow read: if signedIn();
+        allow create: if signedIn() && request.resource.data.authorId == me() && str(request.resource.data.body, 1000);
+        allow update, delete: if signedIn() && resource.data.authorId == me();
+      }
+    }
+  }
+}
