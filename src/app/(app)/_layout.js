@@ -4,7 +4,7 @@ import AppServices from '@/components/AppServices';
 import { useAuth } from '@/context/AuthContext';
 import { colors } from '@/theme';
 
-export const unstable_settings = { initialRouteName: '(tabs)' };
+export const unstable_settings = { anchor: '(tabs)' };
 
 export default function AppLayout() {
   const { isDoctor } = useAuth();

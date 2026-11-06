@@ -3,7 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/context/AuthContext';
 import { colors } from '@/theme';
 
-export const unstable_settings = { initialRouteName: 'index' };
+export const unstable_settings = { anchor: 'index' };
 
 const icon = (name) =>
   function TabIcon({ color, size, focused }) {
